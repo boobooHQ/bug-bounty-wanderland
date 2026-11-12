@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bug Bounty Wanderland</title>
+<meta name="description" content="A calm, endless 3D open world about the ethical hacking community. Ride, find bugs, submit reports and meet the people who shaped bug bounty.">
+<meta name="theme-color" content="#0a0c22">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cellipse cx='32' cy='36' rx='16' ry='20' fill='%235ce1ff'/%3E%3Ccircle cx='32' cy='14' r='8' fill='%231a1c24'/%3E%3Cpath d='M16 30 L4 24 M16 40 L4 42 M48 30 L60 24 M48 40 L60 42' stroke='%231a1c24' stroke-width='4'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="game.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="c" aria-label="Game view"></canvas>
+
+<div id="hud" hidden>
+  <div class="profile">
+    <div class="who"><span class="handle">onceuponahacker</span><span id="rank">Lv 1 · Curious Beginner</span></div>
+    <div class="xpbar"><i id="xpfill"></i></div>
+    <div id="bounty">$0</div>
+    <div id="reports"></div>
+    <div id="fuel" title="Fuel: hold F to turbo"><span class="fi">⛽</span><div class="fbar"><i id="fuelFill"></i></div><span class="fk">hold F</span></div>
+    <div id="powers"></div>
+  </div>
+  <div id="compass" aria-hidden="true">
+    <div class="pill"><div class="ring" id="ring"><div id="arrow">▲</div></div><div id="objective"></div></div>
+    <div id="weather"></div>
+  </div>
+  <div id="chain"><b id="chainText"></b><div class="bar"><i id="chainFill"></i></div></div>
+  <div class="corner">
+    <button id="btnNav" title="Guide: show markers to a place (N)">🧭</button>
+    <button id="btnCodex" title="Hacker Codex (K)">📇 <span id="codexCount">1/1</span></button>
+    <button id="btnMount" aria-label="Switch ride">🚲</button>
+    <button id="btnMusic" aria-label="Music on or off" title="Music (M)">♪</button>
+    <button id="btnPause" aria-label="Rest" title="Rest (P)">⏸</button>
+  </div>
+  <canvas id="radar" width="160" height="160" aria-label="Radar"></canvas>
+  <div id="touchUI">
+    <div id="stickZone"><div id="stickBase"><div id="stickKnob"></div></div></div>
+    <button id="btnJump" aria-label="Hop">⤒</button>
+    <button id="btnTurbo" aria-label="Turbo">🔥</button>
+  </div>
+</div>
+<div id="waypoint" aria-hidden="true"><div id="wpArrow">➤</div><div id="wpIcon">🏠</div><div id="wpDist"></div></div>
+<div id="hint" aria-hidden="true"></div>
+<div id="floaters" aria-hidden="true"></div>
+<div id="toast" aria-live="polite"></div>
+<div id="achToast" aria-live="polite"></div>
+<div id="banner" aria-live="polite"><b id="bannerTitle"></b><span id="bannerSub"></span></div>
+<div id="card" role="status" title="Click to dismiss">
+  <div class="cg"></div>
+  <div class="ch"></div>
+  <div class="cn"></div>
+  <div class="cc"></div>
+  <div class="cf"></div>
+</div>
+<div id="warp" aria-hidden="true"></div>
+
+<section id="menu" class="screen">
+  <div class="panel">
+    <h1><span class="red">Bug Bounty</span> Wanderland</h1>
+    <p class="tag">A calm, endless world for a beginner bug hunter. Ride anywhere, catch glowing <b>bugs</b>, and bring your reports to a <b>Triage Lodge</b>. One small goal at a time shows at the top of the screen. Everyone you meet here is fictional.</p>
+    <p class="profileLine" id="profileLine"></p>
+    <button id="btnPlay" class="primary big">▶ Start hunting</button>
+    <div class="row"><span>You:</span><button data-avatar="hacker">🧑‍💻 Hoodie hacker</button><button data-avatar="santa">🎅 Santa</button></div>
+    <div class="row"><span>Ride:</span><button data-mount="reindeer">🦌 Reindeer</button><button data-mount="bike">🚲 Bicycle</button></div>
+    <div class="row worlds"><span>World:</span><div id="worldRow"></div></div>
+    <div class="row"><span>Graphics:</span><button data-q="high">High</button><button data-q="medium">Medium</button><button data-q="low">Low</button></div>
+    <div class="controls" id="controlsHelp"></div>
+    <button id="btnCodexMenu">📇 Hacker Codex</button>
+  </div>
+</section>
+
+<section id="pause" class="screen">
+  <div class="panel">
+    <h2>Resting under the stars</h2>
+    <p class="tag" id="pauseStats"></p>
+    <button id="btnResume" class="primary big">▶ Keep wandering</button>
+    <button id="btnCodexPause">📇 Hacker Codex</button>
+    <button id="btnMenu">🏠 Main menu</button>
+  </div>
+</section>
+
+<section id="codex" class="screen">
+  <div class="codexPanel">
+    <div class="codexHead">
+      <div><h2>📇 Hacker Codex</h2><p id="codexSummary"></p></div>
+      <button id="btnCodexClose" class="primary">Close</button>
+    </div>
+    <div id="codexTabs"></div>
+    <div id="codexGrid"></div>
+  </div>
+</section>
+
+<div id="loading"><div class="spinner"></div><p id="loadText">Spinning up the subnets…</p></div>
+
+<script>
+  window.addEventListener('error', function (e) {
+    var l = document.getElementById('loading'), t = document.getElementById('loadText');
+    if (l && t && l.style.display !== 'none') t.textContent = 'Sorry, the game could not start (' + (e.message || 'unknown error') + '). Please check your internet connection and try a recent browser.';
+  });
+</script>
+<script type="module" src="game.js"></script>
+</body>
+</html>
