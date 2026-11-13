@@ -178,7 +178,7 @@ export const ACHIEVEMENTS = [
   { id: 'bounty100k',  icon: '💰', name: 'Six Figures',        desc: 'Earn $100,000 in total bounties.' },
   { id: 'codex5',      icon: '📇', name: 'Community Learner',  desc: 'Unlock 5 Hacker Codex cards.' },
   { id: 'codex20',     icon: '📚', name: 'Hall of Fame Scholar', desc: 'Unlock 20 Hacker Codex cards.' },
-  { id: 'podcast',     icon: '📻', name: 'Night Listener',     desc: 'Tune in at a Lantern Radio tower.' },
+  { id: 'podcast',     icon: '📻', name: 'Night Listener',     desc: 'Tune in at a Critical Thinking podcast tower.' },
   { id: 'turbo',       icon: '🔥', name: 'Full Throttle',      desc: 'Use fuel to turbo for the first time.' },
   { id: 'airjump',     icon: '🦘', name: 'Sky Hopper',         desc: 'Do a double jump.' },
   { id: 'glider',      icon: '🪂', name: 'Gentle Landing',     desc: 'Glide through the air.' },
@@ -196,8 +196,8 @@ export const ACHIEVEMENTS = [
 
 export const GROUP_LABEL = {
   'you': '🌱 Beginner · that\'s you',
-  'radio-host': '📻 Lantern Radio · host',
-  'radio-guest': '📻 Lantern Radio · guest',
+  'ct-host': '🎙 Critical Thinking podcast · host',
+  'ct-guest': '🎙 Critical Thinking podcast · guest',
   'legend': '🏆 Legend of Wanderland',
   'educator': '📚 Educator & toolsmith',
 };

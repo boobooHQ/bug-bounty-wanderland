@@ -81,7 +81,7 @@ const SAVE = Object.assign({
 }, store.get('bbw_save', {}));
 const collectedSet = new Set(SAVE.collected), lodgeSet = new Set(SAVE.lodges), codexSet = new Set(SAVE.codex);
 codexSet.add(PLAYER.handle);
-// Drop any cards from older versions that are no longer in the (fictional) codex.
+// Drop any cards from older versions that are no longer in the codex.
 const KNOWN_HANDLES = new Set([PLAYER.handle, ...HACKERS.map(h => h.handle)]);
 for (const h of [...codexSet]) if (!KNOWN_HANDLES.has(h)) codexSet.delete(h);
 for (const k of Object.keys(SAVE.shrines)) if (!KNOWN_HANDLES.has(SAVE.shrines[k])) delete SAVE.shrines[k];
@@ -831,7 +831,7 @@ function makeTower() {
   const rings = [];
   for (let i = 0; i < 3; i++) { const r = new THREE.Mesh(new THREE.TorusGeometry(1, 0.05, 6, 40), M.ring.clone()); r.rotation.x = Math.PI / 2; r.position.y = 17; g.add(r); rings.push(r); }
   const label = makeLabel(); label.position.y = 23.2;
-  drawLabel(label, '📻 Lantern Radio', 'calm hacker radio · tune in', '#ffa0d8', 1.5);
+  drawLabel(label, '🎙 Critical Thinking', 'bug bounty podcast · tune in', '#ffa0d8', 1.5);
   const nameLabel = makeLabel(); nameLabel.position.y = 4.2;
   g.add(frame, hut, light, halo, label, nameLabel);
   g.userData = { light, halo, rings, nameLabel };
@@ -839,7 +839,7 @@ function makeTower() {
 }
 function setTowerState(tower, hacker, unlocked) {
   const u = tower.userData;
-  if (unlocked) drawLabel(u.nameLabel, hacker.handle, hacker.group === 'radio-host' ? 'host' : 'guest', '#ffd38a', 1);
+  if (unlocked) drawLabel(u.nameLabel, hacker.handle, hacker.group === 'ct-host' ? 'host' : 'guest', '#ffd38a', 1);
   else drawLabel(u.nameLabel, 'On air', 'ride closer to listen', '#ffa0d8', 1);
 }
 
@@ -1018,7 +1018,7 @@ function makeChunkObj() {
 }
 
 const HACKER_ORDER = (() => { const r = mulberry32(2026); const a = HACKERS.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; })();
-const isCT = h => h.group === 'radio-host' || h.group === 'radio-guest'; // Lantern Radio cast
+const isCT = h => h.group === 'ct-host' || h.group === 'ct-guest'; // Critical Thinking podcast hosts and guests
 function assignHacker(wantCT) {
   const pool = HACKER_ORDER.filter(h => isCT(h) === wantCT);
   const list = pool.length ? pool : HACKER_ORDER;
@@ -1107,7 +1107,7 @@ function buildChunk(c, cx, cz) {
       c.colliders.push({ x, z, r: 1.4 }); avoid.push({ x, z, r: 4 });
     }
   }
-  // Lantern Radio tower
+  // Podcast tower
   const rt = rng();
   if (!info.lodge && !info.shrine && rt < 0.06) {
     const s = findSpot(0.6, 3.5, 10, 4);
@@ -2024,7 +2024,7 @@ function refreshMenu() {
 }
 let codexTab = 'all';
 function renderCodex() {
-  const tabs = { all: 'All hackers', ct: '📻 Lantern Radio', legend: '🏆 Legends', educator: '📚 Educators', ach: '🏅 Achievements', stats: '📊 Stats' };
+  const tabs = { all: 'All hackers', ct: '🎙 Critical Thinking', legend: '🏆 Legends', educator: '📚 Educators', ach: '🏅 Achievements', stats: '📊 Stats' };
   $('codexTabs').innerHTML = Object.entries(tabs).map(([k, v]) => `<button data-tab="${k}" class="${k === codexTab ? 'on' : ''}">${v}</button>`).join('');
   for (const b of document.querySelectorAll('[data-tab]')) b.addEventListener('click', () => { codexTab = b.dataset.tab; renderCodex(); });
   $('codexSummary').textContent = `${codexCount()} of ${HACKERS.length + 1} cards · ${SAVE.ach.length} of ${ACHIEVEMENTS.length} achievements`;
@@ -2039,7 +2039,7 @@ function renderCodex() {
     const list = [PLAYER, ...HACKERS].filter(h => codexTab === 'all' || (codexTab === 'ct' ? isCT(h) || h.group === 'you' : h.group === codexTab || h.group === 'you'));
     html = list.map(h => {
       const got = codexSet.has(h.handle);
-      if (!got) return `<div class="cardx locked"><div class="cg">${esc(GROUP_LABEL[h.group])}</div><div class="ch">🔒 ???</div><div class="cc">${isCT(h) ? 'Tune in at a Lantern Radio tower to unlock.' : 'Visit a glowing Hacker Shrine to unlock.'}</div></div>`;
+      if (!got) return `<div class="cardx locked"><div class="cg">${esc(GROUP_LABEL[h.group])}</div><div class="ch">🔒 ???</div><div class="cc">${isCT(h) ? 'Tune in at a podcast tower to unlock.' : 'Visit a glowing Hacker Shrine to unlock.'}</div></div>`;
       return `<div class="cardx ${isCT(h) ? 'ct' : ''} ${h.group === 'you' ? 'you' : ''}"><div class="cg">${esc(GROUP_LABEL[h.group])}</div><div class="ch">${esc(h.handle)}</div><div class="cn">${esc(h.name || '')}</div><div class="cc">${esc(h.contribution)}</div></div>`;
     }).join('');
   }

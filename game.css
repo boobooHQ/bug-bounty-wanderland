@@ -161,3 +161,4 @@ body.photo #hud, body.photo #floaters, body.photo #toast, body.photo #card, body
   body.touch #radar { bottom: auto; top: 118px; width: 92px; height: 92px; }
   #chain, body.touch #chain { top: 132px; bottom: auto; }
 }
+.codexHead .tribute { font-size: .78rem; color: var(--muted); max-width: 720px; margin-top: 6px; line-height: 1.4; }
