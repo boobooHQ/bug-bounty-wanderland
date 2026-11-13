@@ -1943,7 +1943,7 @@ function updateHud(target) {
   else if (mode.id !== 'auto') obj = `${mode.icon} ${esc(mode.name)} <i>· ${target ? far + ' m' : 'none nearby'}</i>`;
   else {
     const prog = QSTAT[q.stat]() - q.base;
-    obj = esc(q.text) + (q.n > 1 ? ` <i>${q.stat === 'dist' ? Math.floor(clamp(prog, 0, q.n) / 10) * 10 : clamp(prog, 0, q.n)}/${q.n}</i>` : '');
+    obj = esc(q.text) + (q.n > 1 ? ` <i>${q.stat === 'dist' ? Math.floor(clamp(prog, 0, q.n) / 10) * 10 : clamp(prog, 0, q.n)}/${Number(q.n) || 0}</i>` : '');
     const toLodge = target && (target.kind === 'lodge' || target.kind === 'home');
     if (toLodge && q.kind !== 'lodge') obj = `Hand in your ${SAVE.reports.length} reports <i>· ${TARGET_INFO[target.kind].icon} ${far} m</i>`; // pack is getting full
     else if (target && target.kind !== 'bug') obj += ` <i>· ${TARGET_INFO[target.kind].icon} ${far} m</i>`;
