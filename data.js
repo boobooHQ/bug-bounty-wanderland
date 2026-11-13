@@ -198,7 +198,7 @@ export const GROUP_LABEL = {
   'you': '🌱 Beginner · that\'s you',
   'ct-host': '🎙 Critical Thinking podcast · host',
   'ct-guest': '🎙 Critical Thinking podcast · guest',
-  'legend': '🏆 Legend of Wanderland',
+  'legend': '🏆 Bug bounty legend',
   'educator': '📚 Educator & toolsmith',
 };
 
