@@ -4,7 +4,6 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { mergeGeometries as mergeRaw } from 'three/addons/utils/BufferGeometryUtils.js';
 // Some built-in shapes are indexed and some aren't; normalise before merging.
@@ -115,7 +114,8 @@ const canvas = $('c');
 let renderer;
 try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' }); }
 catch (e) { $('loadText').textContent = 'Sorry, your browser or device does not support 3D graphics (WebGL).'; throw e; }
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, Q.pr));
+const BASE_PR = Math.min(window.devicePixelRatio || 1, Q.pr);
+renderer.setPixelRatio(BASE_PR);
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -146,14 +146,15 @@ if (Q.bloom) {
         c *= mix(1.0 - uVig, 1.0, v);
         float l = dot(c, vec3(0.2126, 0.7152, 0.0722)); c = max(mix(vec3(l), c, 1.1), 0.0);
         gl_FragColor = vec4(c, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
       }`,
   });
-  composer.addPass(gradePass);
-  composer.addPass(new OutputPass());
+  composer.addPass(gradePass); // this is also the final pass: it does the tone mapping and colour conversion itself, saving a full-screen pass
 }
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight); if (composer) composer.setSize(innerWidth, innerHeight);
+  applyResolution();
 });
 
 // =====================================================================
@@ -407,7 +408,7 @@ const skyMat = new THREE.ShaderMaterial({
       float star = step(0.986, r) * smoothstep(0.28, 0.0, length(f)) * smoothstep(0.03, 0.3, h);
       star *= (0.55 + 0.45 * sin(uTime * (1.0 + r * 2.0) + r * 60.0)) * uStars * (1.0 - uClouds * 0.85);
       col += vec3(0.95, 0.95, 1.0) * star * 1.4;
-      for (int i = 0; i < 2; i++){
+      if (uAurora > 0.01) for (int i = 0; i < 2; i++){
         float fi = float(i);
         float band = fbm(vec2(az * 2.2 + fi * 2.1 + uTime * 0.012, fi * 3.0 + uTime * 0.02));
         float center = 0.26 + fi * 0.09 + (band - 0.5) * 0.2;
@@ -447,7 +448,7 @@ const skyMat = new THREE.ShaderMaterial({
     }`
 });
 const sky = new THREE.Mesh(new THREE.SphereGeometry(1100, 48, 24), skyMat);
-sky.renderOrder = -1; scene.add(sky);
+sky.renderOrder = 10; scene.add(sky); // drawn after the land, so pixels hidden behind hills cost nothing
 const envScene = new THREE.Scene();
 envScene.add(new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), skyMat));
 const pmrem = new THREE.PMREMGenerator(renderer);
@@ -610,11 +611,19 @@ const TREE_GEOS = {
   })(),
 };
 // Small ground cover (grass, frosty shrubs, crystal shards) that makes the land feel alive up close.
+// One flat triangle per blade: six times fewer triangles than a cone, and it looks the same at grass size.
+function bladeGeo(w, hh) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute([-w, 0, 0, w, 0, 0, 0, hh, 0], 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0], 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0.5, 1], 2));
+  return g;
+}
 function tuftGeo(blades, h, cols, flower) {
   const parts = [], rng = mulberry32(blades * 31 + Math.round(h * 100));
   for (let i = 0; i < blades; i++) {
     const hh = h * (0.6 + rng() * 0.6), a = rng() * 6.283, tilt = 0.12 + rng() * 0.45, off = rng() * 0.14;
-    const g = new THREE.ConeGeometry(0.035, hh, 3, 1, true).translate(0, hh / 2, 0).rotateZ(tilt).rotateY(a).translate(Math.cos(a) * off, 0, Math.sin(a) * off);
+    const g = bladeGeo(0.05, hh).rotateZ(tilt).rotateY(a).translate(Math.cos(a) * off, 0, Math.sin(a) * off);
     parts.push(withColor(g, cols[i % cols.length]));
   }
   if (flower) parts.push(withColor(new THREE.OctahedronGeometry(0.055, 0).translate(0.05, h * 0.95, 0.02), flower));
@@ -626,6 +635,20 @@ function tuftGeo(blades, h, cols, flower) {
   }
   return geo;
 }
+// Simple stand-ins for trees that are far away. Close up you always get the detailed tree.
+const lowBall = (r, x, y, z, c) => withColor(new THREE.IcosahedronGeometry(r, 0).translate(x, y, z), c);
+const lowTrunk = (rt, rb, h, c) => withColor(new THREE.CylinderGeometry(rt, rb, h, 4).translate(0, h / 2, 0), c);
+const TREE_LOD = {
+  pine: mergeGeometries([lowTrunk(0.12, 0.2, 1.2, 0x4a3324), ...[[1.35, 2.2, 1.6], [0.85, 2.2, 3.4]].flatMap(([r, h, y]) => [withColor(new THREE.ConeGeometry(r, h, 5).translate(0, y, 0), 0x183626), withColor(new THREE.ConeGeometry(r * 0.78, h * 0.42, 5).translate(0, y + h * 0.3, 0), 0xe9f0ff)])]),
+  sakura: mergeGeometries([lowTrunk(0.12, 0.22, 2.2, 0x4a3030), lowBall(1.5, 0, 3.2, 0, 0xf7a8c8), lowBall(1.0, 0.7, 2.9, 0.3, 0xf2c0d8), lowBall(1.0, -0.6, 3.4, -0.3, 0xe890b8)]),
+  cactus: mergeGeometries([withColor(new THREE.CylinderGeometry(0.28, 0.32, 3.3, 6).translate(0, 1.65, 0), 0x3d7a4a), withColor(new THREE.CylinderGeometry(0.17, 0.17, 1.3, 5).translate(0.85, 1.9, 0), 0x3d7a4a), withColor(new THREE.CylinderGeometry(0.15, 0.15, 0.9, 5).translate(-0.75, 2.3, 0), 0x3d7a4a)]),
+  crystal: mergeGeometries([lowTrunk(0.05, 0.12, 4.2, 0x1c1e36), ...[[0.7, 3.4, 0.1, 0x5a78c8], [-0.6, 3.9, -0.2, 0x7a68c0], [0.1, 4.5, 0.5, 0x5a90b8], [-0.2, 2.9, -0.6, 0x5a78c8]].map(([x, y, z, col]) => withColor(new THREE.OctahedronGeometry(0.17, 0).translate(x, y, z), col))]),
+  autumn: mergeGeometries([lowTrunk(0.13, 0.22, 2.4, 0x4a3324), lowBall(1.5, 0, 3.2, 0, 0xe07a2a), lowBall(1.05, 0.8, 2.8, 0.3, 0xe8b040), lowBall(1.0, -0.7, 3.0, -0.3, 0xc84a2a)]),
+  palm: mergeGeometries([withColor(rodGeo([0, 0, 0], [0.7, 4.3, 0], 0.13, 4), 0x8a6a48), ...[0, 1, 2, 3, 4, 5].map(i => withColor(new THREE.ConeGeometry(0.32, 2.3, 3).translate(0, 1.15, 0).scale(0.22, 1, 1).rotateZ(-(Math.PI / 2 + 0.25 + (i % 2) * 0.3)).rotateY(i / 6 * Math.PI * 2).translate(0.7, 4.3, 0), i % 2 ? 0x2f8a4a : 0x3fa055))]),
+  bamboo: mergeGeometries([[0, 0, 6.5], [0.35, 0.2, 5.4], [-0.3, 0.25, 6.0]].flatMap(([x, z, h]) => [withColor(new THREE.CylinderGeometry(0.07, 0.08, h, 4).translate(x, h / 2, z), 0x7ab04a), withColor(new THREE.ConeGeometry(0.55, 1.8, 4).translate(x, h - 0.5, z), 0x5aa544)])),
+  spire: TREE_GEOS.spire,
+  birch: mergeGeometries([lowTrunk(0.09, 0.15, 3.2, 0xe8e4dc), lowBall(1.25, 0, 3.7, 0, 0x8ac85a), lowBall(0.85, 0.5, 3.1, 0.2, 0x6ab04a), lowBall(0.85, -0.5, 3.3, -0.25, 0xa8d86a)]),
+};
 const COVER_GEOS = {
   pine: tuftGeo(5, 0.36, [0x9fb4d0, 0xc8d8f0, 0x7f93b0]),
   sakura: tuftGeo(6, 0.42, [0x4f8f3a, 0x6aa84a, 0x3f7a30], 0xffb0d0),
@@ -745,6 +768,8 @@ function makeCabin(withSign) {
   const beam = makeBeam(0xffa040); beam.scale.set(1.6, 90, 1.6); beam.position.y = 4; g.add(beam);
   g.traverse(o => { if (o.isMesh) { o.receiveShadow = true; o.castShadow = o !== base && o.material !== M.holo && o !== beam; } });
   g.userData = { windows, glow, smoke, snowRoof, label, beam };
+  // Small parts (windows, door, sign...) that are only drawn when the lodge is reasonably close.
+  g.userData.detail = g.children.filter(o => o !== walls && o !== roof && o !== snowRoof && o !== beam && o !== label && !smoke.includes(o));
   return g;
 }
 function setLodgeState(lodge, done, isHome) {
@@ -946,6 +971,9 @@ function makeSnowman() {
 // =====================================================================
 const CH = 64, SEG = 32, STEP = CH / SEG, VN = SEG + 1, GN = VN + 2;
 const CHUNK_INDEX = (() => { const idx = []; for (let j = 0; j < SEG; j++) for (let i = 0; i < SEG; i++) { const a = j * VN + i, b = a + 1, c = a + VN, d = c + 1; idx.push(a, c, b, b, c, d); } return idx; })();
+// Two shared index buffers: full detail for land near the rider, a quarter of the triangles for land far off in the haze.
+const IDX_HI = new THREE.Uint16BufferAttribute(CHUNK_INDEX, 1);
+const IDX_LO = new THREE.Uint16BufferAttribute((() => { const idx = []; for (let j = 0; j < SEG; j += 2) for (let i = 0; i < SEG; i += 2) { const a = j * VN + i, b = a + 2, c = a + 2 * VN, d = c + 2; idx.push(a, c, b, b, c, d); } return idx; })(), 1);
 const chunks = new Map(), pool = [], allChunks = [];
 const hgrid = new Float32Array(GN * GN);
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _e = new THREE.Euler();
@@ -954,7 +982,7 @@ const displayed = new Set(); // hacker handles currently shown on shrines/towers
 function makeChunkObj() {
   const geo = new THREE.BufferGeometry();
   for (const [n, s] of [['position', 3], ['normal', 3], ['color', 3], ['uv', 2]]) geo.setAttribute(n, new THREE.BufferAttribute(new Float32Array(VN * VN * s), s));
-  geo.setIndex(CHUNK_INDEX);
+  geo.setIndex(IDX_HI);
   const group = new THREE.Group();
   const terrain = new THREE.Mesh(geo, M.terrain); terrain.receiveShadow = true;
   const trees = new THREE.InstancedMesh(TREE_GEOS[W.tree], W.tree === 'crystal' ? M.crystal : M.tree, Q.trees);
@@ -974,6 +1002,17 @@ function makeChunkObj() {
   if (Q.cover) { cover = new THREE.InstancedMesh(COVER_GEOS[W.tree], W.tree === 'crystal' ? M.crystal : M.cover, Q.cover); cover.receiveShadow = true; group.add(cover); }
   scene.add(group);
   const c = { group, terrain, trees, rocks, cover, props, propGlow, monument, monGlow, spin, lodge, shrine, tower, landmark, snowman, orb, warp, bugs, fuels, colliders: [], cx: 0, cz: 0, key: '', info: null };
+  // Almost everything in a chunk never moves, so its matrices are computed once when placed, not every frame.
+  group.traverse(o => { o.matrixAutoUpdate = false; });
+  // The few parts that do move (wings, spinning cans, rings) only update while the chunk is close to the rider.
+  const dyn = [orb, orb.userData.core, warp.userData.knot, warp.userData.ring, shrine.userData.ring, shrine.userData.gem, ...tower.userData.rings, ...lodge.userData.smoke, landmark.userData.star, spin];
+  for (const b of bugs) dyn.push(b.userData.body, ...b.userData.wings.map(w => w.w));
+  for (const f of fuels) dyn.push(f.userData.spin, f.userData.ring);
+  for (const o of dyn) o.matrixAutoUpdate = true;
+  lodge.userData.beam.matrixAutoUpdate = true;
+  c.dyn = dyn; c.live = true; c.dirty = true;
+  // Distant chunks are skipped entirely when the scene refreshes its matrices: thousands of objects the engine never has to visit.
+  group.updateMatrixWorld = function (force) { if (c.live || c.dirty) { THREE.Object3D.prototype.updateMatrixWorld.call(this, force || c.dirty); c.dirty = false; } };
   allChunks.push(c);
   return c;
 }
@@ -1025,9 +1064,12 @@ function buildChunk(c, cx, cz) {
   const rng = mulberry32(Math.floor(hash2(cx * 7 + 3 + W.seed * 101, cz * 13 - 5) * 4294967296));
   c.colliders.length = 0;
   const info = { lodge: null, shrine: null, tower: null, bugs: [], orb: null, warp: null, fuels: [] };
+  c.hasSnowman = false;
   c.info = info;
   const local = (x, z) => [x - ox, z - oz];
   const slopeAt = (x, z) => Math.abs(H(x + 2, z) - H(x - 2, z)) + Math.abs(H(x, z + 2) - H(x, z - 2));
+  // The same steepness read from this chunk's height grid: no extra terrain maths for trees, rocks and props.
+  const gSlope = (x, z) => { const i = clamp(Math.floor((x - ox) / STEP), 0, SEG - 1), j = clamp(Math.floor((z - oz) / STEP), 0, SEG - 1), gi = (j + 1) * GN + i + 1; return (Math.abs(hgrid[gi + 1] - hgrid[gi]) + Math.abs(hgrid[gi + GN] - hgrid[gi])) * 2; };
   const avoid = [];
   if (home && Math.abs(home.x - (ox + 32)) < 80 && Math.abs(home.z - (oz + 32)) < 80) avoid.push({ x: home.x, z: home.z, r: 9 });
   const clear = (x, z, r) => !avoid.some(a => (a.x - x) ** 2 + (a.z - z) ** 2 < (a.r + r) ** 2);
@@ -1088,7 +1130,7 @@ function buildChunk(c, cx, cz) {
   const rsn = rng(), sx = rng(), sz = rng(), sr = rng();
   if (W.snowy && rsn < 0.12) {
     const x = ox + 6 + sx * 52, z = oz + 6 + sz * 52, h = H(x, z);
-    if (h > 0.4 && slopeAt(x, z) < 3 && clear(x, z, 1)) { const [lx, lz] = local(x, z); c.snowman.position.set(lx, h - 0.1, lz); c.snowman.rotation.y = sr * 6.28; c.snowman.visible = true; c.colliders.push({ x, z, r: 0.7 }); }
+    if (h > 0.4 && slopeAt(x, z) < 3 && clear(x, z, 1)) { const [lx, lz] = local(x, z); c.snowman.position.set(lx, h - 0.1, lz); c.snowman.rotation.y = sr * 6.28; c.snowman.visible = true; c.hasSnowman = true; c.colliders.push({ x, z, r: 0.7 }); }
   }
   // Bugs (vulnerabilities to find)
   const nb = rng() < 0.62 ? 1 + (rng() < 0.45 ? 1 : 0) + (rng() < 0.18 ? 1 : 0) : 0;
@@ -1131,7 +1173,7 @@ function buildChunk(c, cx, cz) {
     const x = ox + rng() * CH, z = oz + rng() * CH, keep = rng(), sc = 0.9 + rng() * 1.6, rot = rng() * 6.28;
     if (keep > forestDensity(x, z)) continue;
     const h = H(x, z);
-    if (h < 0.6 || h > (W.treeMaxH || 60) || slopeAt(x, z) > 5 || !clear(x, z, 2.5)) continue;
+    if (h < 0.6 || h > (W.treeMaxH || 60) || gSlope(x, z) > 5 || !clear(x, z, 2.5)) continue;
     if (info.bugs.some(b => (b.x - x) ** 2 + (b.z - z) ** 2 < 6)) continue;
     const [lx, lz] = local(x, z);
     _p.set(lx, h - 0.25, lz); _q.setFromEuler(_e.set(0, rot, 0)); _s.set(sc, sc * (0.9 + keep * 0.4), sc);
@@ -1143,7 +1185,7 @@ function buildChunk(c, cx, cz) {
   let r = 0;
   for (let t = 0; t < 10 && r < 8; t++) {
     const x = ox + rng() * CH, z = oz + rng() * CH, sc = 0.5 + rng() * 1.8, rot = rng() * 6.28, keep = rng(), h = H(x, z);
-    if (h < 0.3 || keep > 0.25 + smooth(1, 6, slopeAt(x, z)) * 0.6 || !clear(x, z, sc)) continue;
+    if (h < 0.3 || keep > 0.25 + smooth(1, 6, gSlope(x, z)) * 0.6 || !clear(x, z, sc)) continue;
     const [lx, lz] = local(x, z);
     _p.set(lx, h - 0.2 * sc, lz); _q.setFromEuler(_e.set(0, rot, 0)); _s.set(sc, sc, sc);
     c.rocks.setMatrixAt(r++, _m.compose(_p, _q, _s));
@@ -1185,7 +1227,7 @@ function buildChunk(c, cx, cz) {
     const x = ox + 4 + rng() * 56, z = oz + 4 + rng() * 56, sc = lerp(PR.s[0], PR.s[1], rng()), rot = rng() * 6.28, keep = rng();
     if (keep > PR.p || np >= 5) continue;
     const h = H(x, z);
-    if (h < 0.7 || h > 34 || slopeAt(x, z) > 2.5 || !free(x, z, PR.r * sc + 0.6)) continue;
+    if (h < 0.7 || h > 34 || gSlope(x, z) > 2.5 || !free(x, z, PR.r * sc + 0.6)) continue;
     _p.set(x - ox, h - 0.08, z - oz); _q.setFromEuler(_e.set(0, rot, 0)); _s.set(sc, sc, sc); _m.compose(_p, _q, _s);
     c.props.setMatrixAt(np, _m); c.propGlow.setMatrixAt(np, _m); np++;
     c.colliders.push({ x, z, r: PR.r * sc });
@@ -1193,12 +1235,14 @@ function buildChunk(c, cx, cz) {
   c.props.count = c.propGlow.count = np; c.propGlow.visible = !!PR.glow;
   c.props.instanceMatrix.needsUpdate = c.propGlow.instanceMatrix.needsUpdate = true;
   c.props.computeBoundingSphere(); c.propGlow.computeBoundingSphere();
+  c.group.updateMatrix(); c.group.traverse(o => { if (!o.matrixAutoUpdate) o.updateMatrix(); }); c.dirty = true; c.live = null; // near/far state is re-applied on the next frame
 }
 const sessionTaken = new Set();
 
-let lastShadowKey = '';
-function streamChunks(px, pz, budget) {
-  const pcx = Math.floor(px / CH), pcz = Math.floor(pz / CH), R = Q.radius;
+let lastShadowKey = '', streamKey = '', streamPending = true;
+function streamChunks(px, pz, budget, ms = 1e9) {
+  const pcx = Math.floor(px / CH), pcz = Math.floor(pz / CH), R = Q.radius, sk = pcx + ',' + pcz;
+  if (sk === streamKey && !streamPending) return 0; // nothing to do until the rider crosses into a new chunk
   for (const [key, c] of chunks) if (Math.hypot(c.cx - pcx, c.cz - pcz) > R + 1.2) { freeChunk(c); chunks.delete(key); pool.push(c); }
   const need = [];
   for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
@@ -1207,20 +1251,25 @@ function streamChunks(px, pz, budget) {
     if (!chunks.has(key)) need.push([dx * dx + dz * dz, pcx + dx, pcz + dz, key]);
   }
   need.sort((a, b) => a[0] - b[0]);
-  for (let i = 0; i < need.length && i < budget; i++) { const [, cx, cz, key] = need[i]; const c = pool.pop() || makeChunkObj(); buildChunk(c, cx, cz); chunks.set(key, c); }
-  const sk = pcx + ',' + pcz;
-  if (sk !== lastShadowKey || need.length) {
+  const t0 = performance.now(); let built = 0;
+  for (let i = 0; i < need.length && built < budget; i++) { const [, cx, cz, key] = need[i]; const c = pool.pop() || makeChunkObj(); buildChunk(c, cx, cz); chunks.set(key, c); built++; if (performance.now() - t0 > ms) break; }
+  streamKey = sk; streamPending = need.length > built;
+  if (sk !== lastShadowKey || built) {
     lastShadowKey = sk;
     for (const c of chunks.values()) {
       const near = Math.max(Math.abs(c.cx - pcx), Math.abs(c.cz - pcz));
       c.trees.castShadow = Q.shadow > 0 && W.tree !== 'crystal' && near <= 1;
       if (c.cover) c.cover.visible = near <= Q.coverR;
+      const tLod = near > 2, gLod = near > 2;
+      if (c.treeLod !== tLod) { c.treeLod = tLod; c.trees.geometry = tLod ? TREE_LOD[W.tree] : TREE_GEOS[W.tree]; }
+      if (c.terLod !== gLod) { c.terLod = gLod; c.terrain.geometry.setIndex(gLod ? IDX_LO : IDX_HI); }
     }
   }
-  return need.length;
+  return need.length - built;
 }
+const _near = [];
 function nearbyChunks(x, z) {
-  const cx = Math.floor(x / CH), cz = Math.floor(z / CH), out = [];
+  const cx = Math.floor(x / CH), cz = Math.floor(z / CH), out = _near; out.length = 0;
   for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const c = chunks.get((cx + dx) + ',' + (cz + dz)); if (c) out.push(c); }
   return out;
 }
@@ -1568,7 +1617,7 @@ function setAvatar(style) {
   SAVE.avatar = style; save();
 }
 
-const MOUNTS = { reindeer: { walk: 10, run: 17, accel: 3.2, turn: 1.9, jump: 8.5 }, bike: { walk: 10.5, run: 16, accel: 2.8, turn: 1.6, jump: 6.5 } };
+const MOUNTS = { reindeer: { walk: 10, run: 17, accel: 4.2, turn: 1.9, jump: 8.5 }, bike: { walk: 10.5, run: 16, accel: 3.8, turn: 1.6, jump: 6.5 } };
 const P = { mount: SAVE.mount === 'bike' ? 'bike' : 'reindeer', x: 0, z: 0, y: 0, vy: 0, heading: 0, speed: 0, vel: new THREE.Vector3(), grounded: true, pitch: 0, roll: 0, gait: 0, crank: 0, steerVis: 0, surface: 'land', bumpT: 0, airJumps: 0, gliding: false, turbo: false, steerIn: 0 };
 function applyMount() {
   reindeer.root.visible = P.mount === 'reindeer'; bike.root.visible = P.mount === 'bike';
@@ -1876,14 +1925,14 @@ function updateHud(target) {
   let ph = '';
   for (const [k, v] of Object.entries(power)) if (v > 0) ph += `<div class="pw" style="--c:${POWERS[k].css}">${POWERS[k].icon} ${POWERS[k].name}<div class="bar"><i style="width:${v / POWERS[k].dur * 100}%"></i></div></div>`;
   if (luckActive()) ph += `<div class="pw" style="--c:#ffe9a8">☄ Lucky skies · 2× XP</div>`;
-  if ($('powers').innerHTML !== ph) $('powers').innerHTML = ph;
+  if (ph !== lastPh) { lastPh = ph; $('powers').innerHTML = ph; }
   // chain meter
   const chainEl = $('chain');
   if (S.chain >= 2 && S.chainT > 0) { chainEl.classList.add('show'); $('chainText').textContent = `Chain ×${S.chain} · ${chainMult().toFixed(2).replace(/\.?0+$/, '')}× bounty`; $('chainFill').style.width = `${S.chainT / CHAIN_TIME * 100}%`; }
   else chainEl.classList.remove('show');
   // fuel gauge
   const f = SAVE.fuel / FUEL.max;
-  $('fuelFill').style.width = `${f * 100}%`;
+  const fw = Math.round(f * 200) / 2; if (fw !== lastFuelW) { lastFuelW = fw; $('fuelFill').style.width = `${fw}%`; }
   $('fuel').classList.toggle('empty', SAVE.fuel <= 0);
   $('fuel').classList.toggle('burn', P.turbo);
   // Goal pill: a small arrow plus one line of text. That's all the navigation there is by default.
@@ -1905,7 +1954,7 @@ function updateHud(target) {
   $('arrow').style.color = target && !isBug ? target.color : '';
   $('ring').classList.toggle('near', !!isBug && target.d < 45);
 }
-let lastObj = '', wakeTimer = null;
+let lastObj = '', wakeTimer = null, lastPh = '', lastFuelW = -1;
 const CHAIN_TIME = 14;
 const radarCtx = $('radar').getContext('2d');
 function drawRadar(yaw) {
@@ -2060,7 +2109,7 @@ function applyWorldLook() {
   if (W.trail) M.trail.color.setRGB(...W.trail);
   bike.rear.userData.rimGlow.visible = bike.front.userData.rimGlow.visible = W.grid > 0;
   for (const c of allChunks) {
-    c.trees.geometry = TREE_GEOS[W.tree]; c.trees.material = W.tree === 'crystal' ? M.crystal : M.tree;
+    c.trees.geometry = TREE_GEOS[W.tree]; c.trees.material = W.tree === 'crystal' ? M.crystal : M.tree; c.treeLod = null;
     c.rocks.geometry = W.snowy ? ROCK_GEOS.snowy : ROCK_GEOS.plain;
     if (c.cover) { c.cover.geometry = COVER_GEOS[W.tree]; c.cover.material = W.tree === 'crystal' ? M.crystal : M.cover; }
     const PR = PROPS[W.id], MO = MONUMENTS[W.id];
@@ -2094,7 +2143,7 @@ function enterWorld(world, viaWarp) {
   P.y = groundAt(P.x, P.z); P.speed = 0; P.vel.set(0, 0, 0); P.vy = 0; P.grounded = true;
   camInit = false;
   setWeather(W.weathers[0], true);
-  streamChunks(P.x, P.z, 999);
+  streamPending = true; streamChunks(P.x, P.z, 30); // the nearest land first; the rest arrives over the next second, far off in the haze
 }
 
 function startWarp() {
@@ -2236,6 +2285,7 @@ function findTarget(want) {
   }
   return best;
 }
+const _homeCol = { x: 0, z: 0, r: 3.4 }, _homeList = [_homeCol];
 function simulate(dt) {
   readInput();
   const m = MOUNTS[P.mount], hHere = H(P.x, P.z);
@@ -2259,20 +2309,19 @@ function simulate(dt) {
   if (targetSpeed > 0) targetSpeed *= clamp(1 - grade * (P.mount === 'bike' ? 1.6 : 1.0), 0.25, P.mount === 'bike' ? 1.5 : 1.15);
   if (P.mount === 'bike' && input.throttle === 0 && grade < -0.05) targetSpeed = Math.min(m.run, P.speed - grade * 6 * dt * 10);
   const slide = P.surface === 'ice' || (W.water === 'mirror' && P.surface !== 'land');
-  const acc = P.turbo ? 2.6 : slide ? 0.6 : (targetSpeed === 0 ? 1.6 : m.accel);
+  const acc = P.turbo ? 2.6 : slide ? 0.6 : (targetSpeed === 0 ? 2.6 : m.accel);
   if (P.bumpT > 0) { P.bumpT -= dt; targetSpeed = Math.min(targetSpeed, 1); }
   P.speed += (targetSpeed - P.speed) * damp(acc, dt);
   const turnScale = P.mount === 'reindeer' ? clamp(0.45 + Math.abs(P.speed) / 6, 0.45, 1) : clamp(Math.abs(P.speed) / 4, 0.15, 1);
-  P.steerIn = lerp(P.steerIn, input.steer, damp(stick.id !== null ? 20 : 9, dt)); // ease into turns instead of snapping
+  P.steerIn = lerp(P.steerIn, input.steer, damp(stick.id !== null ? 22 : 14, dt)); // ease into turns instead of snapping
   P.heading += P.steerIn * m.turn * turnScale * dt * (P.speed < -0.1 ? -1 : 1) * (slide ? 0.7 : 1);
   P.steerVis = lerp(P.steerVis, input.steer, damp(8, dt));
   fwd.set(-Math.sin(P.heading), 0, -Math.cos(P.heading));
   P.vel.lerp(tmpV.copy(fwd).multiplyScalar(P.speed), damp(slide ? 0.9 : 9, dt));
   let nx = P.x + P.vel.x * dt, nz = P.z + P.vel.z * dt;
-  const colliders = [];
-  for (const c of nearbyChunks(nx, nz)) colliders.push(...c.colliders);
-  if (home) colliders.push({ x: home.x, z: home.z, r: 3.4 });
-  for (const col of colliders) {
+  const near = nearbyChunks(nx, nz);
+  if (home) { _homeCol.x = home.x; _homeCol.z = home.z; }
+  for (let ci = home ? -1 : 0; ci < near.length; ci++) for (const col of (ci < 0 ? _homeList : near[ci].colliders)) {
     const dx = nx - col.x, dz = nz - col.z, rr = col.r + 0.55, d2 = dx * dx + dz * dz;
     if (d2 < rr * rr && d2 > 1e-6) {
       const d = Math.sqrt(d2); nx = col.x + dx / d * rr; nz = col.z + dz / d * rr;
@@ -2362,7 +2411,7 @@ function interact(dt) {
     for (const f of i.fuels) {
       if (f.taken) continue;
       let d = Math.hypot(f.x - P.x, f.z - P.z);
-      if (power.magnet > 0 && d < pullR) { f.x = lerp(f.x, P.x, pullK); f.z = lerp(f.z, P.z, pullK); f.y = lerp(f.y, P.y + 1, pullK); f.obj.position.set(f.x - c.group.position.x, f.y, f.z - c.group.position.z); d = Math.hypot(f.x - P.x, f.z - P.z); }
+      if (power.magnet > 0 && d < pullR) { f.x = lerp(f.x, P.x, pullK); f.z = lerp(f.z, P.z, pullK); f.y = lerp(f.y, P.y + 1, pullK); f.obj.position.set(f.x - c.group.position.x, f.y, f.z - c.group.position.z); f.obj.updateMatrix(); d = Math.hypot(f.x - P.x, f.z - P.z); }
       if (d < 2.8 && Math.abs(f.y - (P.y + 1)) < 3.5) {
         f.taken = true; f.obj.visible = false; sessionTaken.add(f.key);
         const before = SAVE.fuel; SAVE.fuel = Math.min(FUEL.max, SAVE.fuel + FUEL.perCan); SAVE.cans = (SAVE.cans || 0) + 1;
@@ -2377,7 +2426,7 @@ function interact(dt) {
       let d = Math.hypot(b.x - P.x, b.z - P.z);
       if (pullR > 0 && d < pullR) { // radar and magnet pull bugs in
         const k = pullK; b.x = lerp(b.x, P.x, k); b.z = lerp(b.z, P.z, k); b.y = lerp(b.y, P.y + 1.3, k);
-        b.obj.position.set(b.x - c.group.position.x, b.y, b.z - c.group.position.z); d = Math.hypot(b.x - P.x, b.z - P.z);
+        b.obj.position.set(b.x - c.group.position.x, b.y, b.z - c.group.position.z); b.obj.updateMatrix(); d = Math.hypot(b.x - P.x, b.z - P.z);
       }
       if (d < 3 && Math.abs(b.y - (P.y + 1.3)) < 3.2) {
         b.taken = true; b.obj.visible = false; collectedSet.add(b.key);
@@ -2484,26 +2533,36 @@ function animate(dt) {
 
   for (const c of chunks.values()) {
     const i = c.info; if (!i) continue;
+    const live = Math.abs(c.group.position.x + 32 - P.x) + Math.abs(c.group.position.z + 32 - P.z) < 200;
+    if (live !== c.live) {
+      c.live = live; for (const o of c.dyn) o.matrixAutoUpdate = live;
+      for (const o of c.lodge.userData.detail) o.visible = live;
+      if (c.hasSnowman) c.snowman.visible = live;
+    }
     for (const b of i.bugs) if (!b.taken) {
-      const u = b.obj.userData;
+      const u = b.obj.userData; u.body.visible = live && Math.abs(b.x - P.x) + Math.abs(b.z - P.z) < 110; // far away only the soft light shows
       u.beam.material.opacity = (0.1 + b.s * 0.05) * smooth(6, 34, Math.hypot(b.x - P.x, b.z - P.z)) * (0.85 + 0.15 * Math.sin(time * 1.7 + b.ph)); // soft lights that fade as you get close
+      if (!u.body.visible) continue;
       u.body.position.y = Math.sin(time * 2 + b.ph) * 0.15; u.body.rotation.y = time * 0.6 + b.ph;
       for (const w of u.wings) w.w.rotation.z = w.s * (0.3 + Math.sin(time * 28 + b.ph) * 0.5);
       u.halo.material.opacity = 0.45 + Math.sin(time * 3 + b.ph) * 0.15;
     }
-    if (i.shrine) { const u = c.shrine.userData; u.ring.rotation.z = time * 0.8; u.ring.position.y = 2.4 + Math.sin(time * 1.3) * 0.5; u.gem.rotation.y = time * 1.5; u.gem.position.y = 4.2 + Math.sin(time * 2) * 0.12; }
+    if (live && i.shrine) { const u = c.shrine.userData; u.ring.rotation.z = time * 0.8; u.ring.position.y = 2.4 + Math.sin(time * 1.3) * 0.5; u.gem.rotation.y = time * 1.5; u.gem.position.y = 4.2 + Math.sin(time * 2) * 0.12; }
     if (i.tower) {
       const u = c.tower.userData, blink = (Math.sin(time * 3) > 0.6) ? 1 : 0.25;
       u.light.material.color.setRGB(4 * blink, 0.4 * blink, 0.5 * blink); u.halo.material.opacity = 0.8 * blink;
-      u.rings.forEach((r, k) => { const t = (time * 0.4 + k / 3) % 1; r.scale.setScalar(1 + t * 9); r.material.opacity = (1 - t) * 0.55; });
+      if (live) u.rings.forEach((r, k) => { const t = (time * 0.4 + k / 3) % 1; r.scale.setScalar(1 + t * 9); r.material.opacity = (1 - t) * 0.55; });
     }
-    if (i.orb) { const u = c.orb.userData; u.beam.material.opacity = 0.2 * smooth(4, 24, Math.hypot(i.orb.x - P.x, i.orb.z - P.z)); u.core.rotation.y = time * 1.5; u.core.rotation.x = time; c.orb.position.y = i.orb.y + Math.sin(time * 2) * 0.15; }
-    if (i.warp) { const u = c.warp.userData; u.knot.rotation.y = time * 1.2; u.knot.rotation.x = time * 0.7; u.ring.rotation.x = time * 0.9; u.ring.rotation.y = time * 0.5; }
-    if (c.landmark.visible) c.landmark.userData.star.rotation.y = time * 0.8;
-    if (c.monument.visible && c.spin.visible) c.spin.rotation.z = time * 0.5;
-    for (const f of i.fuels) if (!f.taken) { const u = f.obj.userData; u.spin.rotation.y = time * 1.8 + f.x; u.spin.position.y = Math.sin(time * 2.5 + f.z) * 0.12; u.ring.scale.setScalar(1 + (time * 0.8 + f.x) % 1 * 0.6); u.ring.material.opacity = 0.7 * (1 - (time * 0.8 + f.x) % 1); }
+    if (i.orb) { const u = c.orb.userData; u.beam.material.opacity = 0.2 * smooth(4, 24, Math.hypot(i.orb.x - P.x, i.orb.z - P.z)); if (live) { u.core.rotation.y = time * 1.5; u.core.rotation.x = time; c.orb.position.y = i.orb.y + Math.sin(time * 2) * 0.15; } }
+    if (live && i.warp) { const u = c.warp.userData; u.knot.rotation.y = time * 1.2; u.knot.rotation.x = time * 0.7; u.ring.rotation.x = time * 0.9; u.ring.rotation.y = time * 0.5; }
+    if (live && c.landmark.visible) c.landmark.userData.star.rotation.y = time * 0.8;
+    if (live && c.monument.visible && c.spin.visible) c.spin.rotation.z = time * 0.5;
+    const cNear = live;
+    for (const f of i.fuels) if (!f.taken) { f.obj.visible = cNear; if (!cNear) continue; const u = f.obj.userData; u.spin.rotation.y = time * 1.8 + f.x; u.spin.position.y = Math.sin(time * 2.5 + f.z) * 0.12; u.ring.scale.setScalar(1 + (time * 0.8 + f.x) % 1 * 0.6); u.ring.material.opacity = 0.7 * (1 - (time * 0.8 + f.x) % 1); }
     if (i.lodge) {
-      if (Math.abs(i.lodge.x - P.x) < 220 && Math.abs(i.lodge.z - P.z) < 220) animateSmoke(c.lodge);
+      const smokeOn = live, lu = c.lodge.userData;
+      if (lu.smokeOn !== smokeOn) { lu.smokeOn = smokeOn; for (const s of lu.smoke) s.visible = smokeOn; }
+      if (smokeOn) animateSmoke(c.lodge);
       lodgeBeam(c.lodge, i.lodge.x, i.lodge.z);
     }
   }
@@ -2660,7 +2719,7 @@ function updateAnimals(dt) {
     a.gait += dt * a.speed * 3.2 / (K.leg + 0.3);
     const moving = clamp(a.speed / K.speed, 0, 1.3), y = groundAt(a.x, a.z);
     o.root.position.set(a.x, y + (K.hop ? Math.abs(Math.sin(a.gait * 0.5)) * 0.28 * Math.min(1, moving) : 0), a.z);
-    o.root.rotation.y = a.heading;
+    o.root.rotation.y = a.heading; o.root.visible = d < 105;
     o.legs.forEach((l, i) => { l.rotation.x = Math.sin(a.gait + (i === 0 || i === 3 ? 0 : Math.PI)) * 0.5 * moving; });
     a.graze = lerp(a.graze, a.mode === 'idle' && d > 7 && !K.shell ? 1 : 0, damp(2, dt));
     o.neck.rotation.x = a.graze * (K.neck ? 1.0 : 0.5) + Math.sin(a.gait * 2) * 0.03 * moving;
@@ -2800,6 +2859,7 @@ function updateAmbient(dt) {
 // ---------- Camera ----------
 const camPos = new THREE.Vector3(), camLook = new THREE.Vector3(), _tp = new THREE.Vector3(), _tl = new THREE.Vector3();
 let camYaw = 0, camInit = false;
+let hudTick = 0;
 function updateCamera(dt) {
   if (S.state === 'menu' || S.state === 'loading') {
     const a = time * 0.05;
@@ -2807,7 +2867,7 @@ function updateCamera(dt) {
     _tp.y = Math.max(_tp.y, groundAt(_tp.x, _tp.z) + 1.5);
   } else {
     if (Math.abs(P.speed) > 1 && time - lastLook > 1.5) orbitYaw = lerp(orbitYaw, 0, damp(1.2, dt));
-    camYaw = lerp(camYaw, P.heading, damp(4, dt)); camYaw = P.heading + wrapAngle(camYaw - P.heading);
+    camYaw = lerp(camYaw, P.heading, damp(5.5, dt)); camYaw = P.heading + wrapAngle(camYaw - P.heading);
     const yaw = camYaw + orbitYaw, dist = camDist + Math.abs(P.speed) * 0.12;
     const la = clamp(P.speed * 0.09, 0, 2.6); // look a little ahead of the rider
     _tl.set(P.x + fwd.x * la, P.y + 1.9, P.z + fwd.z * la);
@@ -2815,7 +2875,7 @@ function updateCamera(dt) {
     _tp.y = Math.max(_tp.y, groundAt(_tp.x, _tp.z) + 1.2);
   }
   if (!camInit) { camPos.copy(_tp); camLook.copy(_tl); camInit = true; }
-  camPos.lerp(_tp, damp(S.state === 'play' ? 6 : 1.5, dt)); camLook.lerp(_tl, damp(10, dt));
+  camPos.lerp(_tp, damp(S.state === 'play' ? 8 : 1.5, dt)); camLook.lerp(_tl, damp(10, dt));
   camera.position.copy(camPos); camera.lookAt(camLook);
   U.fade.value = S.state === 'play' ? Math.max(0, camPos.distanceTo(camLook) - 2.2) : 0;
   const fov = Math.min(92, 58 + Math.abs(P.speed) * 0.35 + (power.boost > 0 ? 8 : 0) + (P.turbo ? 10 : 0));
@@ -2829,10 +2889,11 @@ function updateCamera(dt) {
   if (W.water !== 'ice') { M.water.normalMap.offset.set(time * 0.004, time * 0.0025); M.mirror.normalMap.offset.copy(M.water.normalMap.offset); }
   U.player.value.set(P.x, P.z);
   if (S.state === 'play') {
-    target = nearestTarget();
+    // Looking for the nearest goal and redrawing the radar a few times a second is plenty.
+    if (++hudTick % 6 === 0 || !target) target = nearestTarget(); else target.d = Math.hypot(target.x - P.x, target.z - P.z);
     if (target) { const a = Math.atan2(-(target.x - P.x), -(target.z - P.z)); $('arrow').style.transform = `rotate(${-wrapAngle(a - (camYaw + orbitYaw))}rad)`; }
     updateHud(target);
-    drawRadar(camYaw + orbitYaw);
+    if (hudTick % 3 === 0) drawRadar(camYaw + orbitYaw);
   }
   const gl = S.state === 'play' ? guideLevel(target) : 0;
   updateWaypoint(gl ? target : null, gl);
@@ -2922,10 +2983,35 @@ refreshMenu();
 S.state = 'menu';
 
 const clock = new THREE.Clock();
+// Adaptive resolution: if the device cannot hold a smooth frame rate, render slightly fewer pixels; when there is room again, go back up.
+let prScale = 1, frameAvg = 16, prWait = 3, prUpWait = 6, prLastDown = -99, needRender = true, shadowHalf = false, frameNo = 0;
+function applyResolution() {
+  const pr = Math.max(0.6, BASE_PR * prScale);
+  renderer.setPixelRatio(pr); renderer.setSize(innerWidth, innerHeight);
+  if (composer) { composer.setPixelRatio(pr); composer.setSize(innerWidth, innerHeight); }
+  needRender = true;
+}
+function tuneResolution(raw) {
+  if (raw > 0.1 || S.state !== 'play') return; // ignore pauses and tab switches
+  frameAvg += (raw * 1000 - frameAvg) * 0.04; prWait -= raw;
+  if (prWait > 0) return;
+  if (frameAvg > 21 && (prScale > 0.6 || !shadowHalf)) { // under about 48 fps
+    if (time - prLastDown < 12) prUpWait = Math.min(90, prUpWait * 2); // we climbed too soon last time: be more patient
+    prLastDown = time; prWait = 2;
+    if (!shadowHalf) shadowHalf = true; // first, refresh shadows on every other frame
+    else { prScale = Math.max(0.6, prScale * 0.85); applyResolution(); } // then render slightly fewer pixels
+  } else if (frameAvg < 17.6 && (prScale < 1 || shadowHalf) && time - prLastDown > prUpWait) {
+    prWait = 3;
+    if (prScale < 1) { prScale = Math.min(1, prScale * 1.12); applyResolution(); } else shadowHalf = false;
+  }
+}
 function frame() {
-  const dt = Math.min(clock.getDelta(), 1 / 20);
+  const raw = clock.getDelta(), dt = Math.min(raw, 1 / 20);
   step(dt);
-  render();
+  frameNo++;
+  renderer.shadowMap.autoUpdate = !shadowHalf || frameNo % 2 === 0;
+  if (S.state !== 'paused' || needRender) { render(); needRender = false; } // a paused game draws nothing
+  tuneResolution(raw);
   requestAnimationFrame(frame);
 }
 function step(dt) {
@@ -2938,7 +3024,7 @@ function step(dt) {
     updateWeather(dt);
     animate(dt); updateAnimals(dt);
     fx.update(dt); updateRipples(dt); updateFloaters(dt);
-    streamChunks(P.x, P.z, 2);
+    streamChunks(P.x, P.z, 2, 4);
   }
   updateCamera(S.state === 'paused' ? 0 : dt);
 }

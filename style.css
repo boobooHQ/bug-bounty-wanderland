@@ -39,7 +39,6 @@ html, body {
   font-weight: 600; line-height: 1.45; text-align: center;
   opacity: 0; transition: opacity .6s, transform .6s;
   pointer-events: none; z-index: 3; width: max-content; max-width: min(560px, calc(100vw - 32px));
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 #toast small { display: block; color: var(--gold); font-size: .8rem; letter-spacing: .06em; text-transform: uppercase; margin-bottom: 2px; }
